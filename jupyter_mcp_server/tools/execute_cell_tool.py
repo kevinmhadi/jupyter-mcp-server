@@ -143,10 +143,21 @@ class ExecuteCellTool(BaseTool):
             # Get notebook_path and kernel_id first
             notebook_path, kernel_id = get_current_notebook_context(notebook_manager)
 
-            # Resolve to absolute path
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc room lookups -- jupyter-collaboration
+            # indexes by the same relative path JupyterLab uses. Resolving
+            # this to an absolute, symlink-followed path here causes
+            # file_id_manager.get_id() to miss the existing index entry
+            # whenever the workdir contains symlinks (e.g. on HPC where
+            # ~/jupyter_workdir/gpfs -> /gpfs), creating a duplicate entry
+            # under the wrong path and breaking RTC document sync.
+            #
+            # Compute the absolute path separately, only for direct file
+            # I/O (open()) where we genuinely need a path the OS can find.
+            notebook_abs_path = notebook_path
             if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
 
             # Check if kernel needs to be started
             if kernel_id is None:
@@ -218,7 +229,7 @@ class ExecuteCellTool(BaseTool):
                 # Notebook not open - use file-based approach
                 logger.info(f"Notebook {file_id} not open, using file mode")
 
-                with open(notebook_path, 'r', encoding='utf-8') as f:
+                with open(notebook_abs_path, 'r', encoding='utf-8') as f:
                     notebook = nbformat.read(f, as_version=4)
 
                 num_cells = len(notebook.cells)
@@ -241,8 +252,8 @@ class ExecuteCellTool(BaseTool):
                     timeout=timeout_seconds
                 )
 
-                # Write outputs back to file
-                await self._write_outputs_to_cell(notebook_path, cell_index, outputs)
+                # Write outputs back to file (use absolute path for OS I/O)
+                await self._write_outputs_to_cell(notebook_abs_path, cell_index, outputs)
 
                 return outputs
 

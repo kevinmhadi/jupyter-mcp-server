@@ -68,8 +68,13 @@ class MoveCellTool(BaseTool):
         notebook_path: str,
         source_index: int,
         target_index: int,
+        notebook_abs_path: Optional[str] = None,
     ) -> tuple[Notebook, dict]:
         """Move cell using YDoc (collaborative editing mode).
+
+        Args:
+            notebook_path: Path used for file_id_manager lookup (relative).
+            notebook_abs_path: Absolute path used only as a file fallback.
 
         Returns:
             Tuple of (notebook, moved_cell_info)
@@ -91,7 +96,9 @@ class MoveCellTool(BaseTool):
             nb.insert_cell(target_index, cell_source, cell_type)
             return Notebook(**nb.as_dict()), {"cell_type": cell_type, "source": cell_source}
         else:
-            return await self._move_cell_file(notebook_path, source_index, target_index)
+            return await self._move_cell_file(
+                notebook_abs_path or notebook_path, source_index, target_index
+            )
 
     async def _move_cell_file(
         self,
@@ -183,17 +190,22 @@ class MoveCellTool(BaseTool):
             serverapp = context.serverapp
             notebook_path, _ = get_current_notebook_context(notebook_manager)
 
-            if serverapp and not Path(notebook_path).is_absolute():
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc lookups; compute absolute separately
+            # for direct file I/O. See note in execute_cell_tool.py.
+            notebook_abs_path = notebook_path
+            if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
 
             if serverapp:
                 nb, cell_info = await self._move_cell_ydoc(
-                    serverapp, notebook_path, source_index, target_index
+                    serverapp, notebook_path, source_index, target_index,
+                    notebook_abs_path=notebook_abs_path,
                 )
             else:
                 nb, cell_info = await self._move_cell_file(
-                    notebook_path, source_index, target_index
+                    notebook_abs_path, source_index, target_index
                 )
 
         elif mode == ServerMode.MCP_SERVER and notebook_manager is not None:

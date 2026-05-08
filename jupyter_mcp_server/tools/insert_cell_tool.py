@@ -54,40 +54,50 @@ class InsertCellTool(BaseTool):
         notebook_path: str,
         cell_index: int,
         cell_type: Literal["code", "markdown"],
-        cell_source: str
+        cell_source: str,
+        notebook_abs_path: Optional[str] = None,
     ) -> tuple[Notebook, int, int]:
         """Insert cell using YDoc (collaborative editing mode).
-        
+
         Args:
             serverapp: Jupyter ServerApp instance
-            notebook_path: Path to the notebook
+            notebook_path: Path to the notebook as known to the
+                file_id_manager (typically the relative path JupyterLab
+                uses; do NOT pass a symlink-resolved absolute path here
+                or the file_id lookup may miss the existing entry).
             cell_index: Index to insert at (-1 for append)
             cell_type: Type of cell to insert ("code", "markdown")
             cell_source: Source content for the cell
-            
+            notebook_abs_path: Absolute, OS-resolvable path used only as
+                a fallback when YDoc is not available and we have to
+                read/write the file directly. Defaults to ``notebook_path``.
+
         Returns:
             Tuple of (notebook, actual_index, total_cells_after_insertion)
-            
+
         Raises:
             IndexError: When cell_index is out of range
         """
         nb = await get_notebook_model(serverapp, notebook_path)
-        
+
         if nb:
             # Notebook is open in collaborative mode, use YDoc
             total_cells = len(nb)
-            
+
             # Validate insertion parameters
             actual_index = self._validate_cell_insertion_params(
                 cell_index, total_cells, cell_type
             )
-            
+
             nb.insert_cell(actual_index, cell_source, cell_type)
-            
+
             return Notebook(**nb.as_dict()), actual_index, len(nb)
         else:
             # YDoc not available, use file operations
-            return await self._insert_cell_file(notebook_path, cell_index, cell_type, cell_source)
+            return await self._insert_cell_file(
+                notebook_abs_path or notebook_path,
+                cell_index, cell_type, cell_source,
+            )
     
     async def _insert_cell_file(
         self,
@@ -241,21 +251,28 @@ class InsertCellTool(BaseTool):
             context = get_server_context()
             serverapp = context.serverapp
             notebook_path, _ = get_current_notebook_context(notebook_manager)
-            
-            # Resolve to absolute path
-            if serverapp and not Path(notebook_path).is_absolute():
+
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc room lookups (see note in
+            # execute_cell_tool.py). Compute the absolute path separately
+            # for direct file I/O.
+            notebook_abs_path = notebook_path
+            if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
 
             if serverapp:
-                # Try YDoc approach first (with thread safety and transactions)
+                # Try YDoc approach first (with thread safety and transactions).
+                # Pass both: relative path is used for file_id_manager lookup,
+                # absolute path is used if we have to fall back to open().
                 notebook, actual_index, new_total_cells = await self._insert_cell_ydoc(
-                    serverapp, notebook_path, cell_index, cell_type, cell_source
+                    serverapp, notebook_path, cell_index, cell_type, cell_source,
+                    notebook_abs_path=notebook_abs_path
                 )
             else:
-                # Fall back to file operations
+                # Fall back to file operations (needs an OS-resolvable path)
                 notebook, actual_index, new_total_cells = await self._insert_cell_file(
-                    notebook_path, cell_index, cell_type, cell_source
+                    notebook_abs_path, cell_index, cell_type, cell_source
                 )
                 
         elif mode == ServerMode.MCP_SERVER and notebook_manager is not None:

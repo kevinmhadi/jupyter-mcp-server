@@ -38,19 +38,25 @@ class OverwriteCellSourceTool(BaseTool):
         serverapp: Any,
         notebook_path: str,
         cell_index: int,
-        cell_source: str
+        cell_source: str,
+        notebook_abs_path: Optional[str] = None,
     ) -> str:
         """Overwrite cell source using YDoc (collaborative editing mode).
-        
+
         Args:
             serverapp: Jupyter ServerApp instance
-            notebook_path: Path to the notebook
+            notebook_path: Path to the notebook as known to the
+                file_id_manager (typically relative; do not pass a
+                symlink-resolved absolute path).
             cell_index: Index of the cell to overwrite
             cell_source: New cell source content
-            
+            notebook_abs_path: Absolute, OS-resolvable path used only as
+                a file-fallback when YDoc is not available. Defaults to
+                ``notebook_path``.
+
         Returns:
             Diff showing changes made
-            
+
         Raises:
             RuntimeError: When file_id_manager is not available
             ValueError: When cell_index is out of range
@@ -64,18 +70,20 @@ class OverwriteCellSourceTool(BaseTool):
                 raise ValueError(
                     f"Cell index {cell_index} is out of range. Notebook has {len(nb)} cells."
                 )
-            
+
             old_source = nb.get_cell_source(cell_index)
             if isinstance(old_source, list):
                 old_source = "".join(old_source)
             else:
                 old_source = str(old_source)
             nb.set_cell_source(cell_index, cell_source)
-            
+
             return self._generate_diff(old_source, cell_source)
         else:
             # YDoc not available, use file operations
-            return await self._overwrite_cell_file(notebook_path, cell_index, cell_source)
+            return await self._overwrite_cell_file(
+                notebook_abs_path or notebook_path, cell_index, cell_source
+            )
     
     async def _overwrite_cell_file(
         self,
@@ -210,18 +218,24 @@ class OverwriteCellSourceTool(BaseTool):
             context = get_server_context()
             serverapp = context.serverapp
             notebook_path, _ = get_current_notebook_context(notebook_manager)
-            
-            # Resolve to absolute path
-            if serverapp and not Path(notebook_path).is_absolute():
+
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc lookups; compute absolute separately
+            # for direct file I/O. See note in execute_cell_tool.py.
+            notebook_abs_path = notebook_path
+            if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
 
             if serverapp:
                 # Try YDoc approach first (with thread safety and transactions)
-                diff = await self._overwrite_cell_ydoc(serverapp, notebook_path, cell_index, cell_source)
+                diff = await self._overwrite_cell_ydoc(
+                    serverapp, notebook_path, cell_index, cell_source,
+                    notebook_abs_path=notebook_abs_path,
+                )
             else:
                 # Fall back to file operations
-                diff = await self._overwrite_cell_file(notebook_path, cell_index, cell_source)
+                diff = await self._overwrite_cell_file(notebook_abs_path, cell_index, cell_source)
                 
         elif mode == ServerMode.MCP_SERVER and notebook_manager is not None:
             # MCP_SERVER mode: Use WebSocket connection with remote transaction management

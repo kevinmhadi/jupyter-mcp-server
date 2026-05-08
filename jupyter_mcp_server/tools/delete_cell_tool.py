@@ -28,15 +28,21 @@ class DeleteCellTool(BaseTool):
         self,
         serverapp: Any,
         notebook_path: str,
-        cell_indices: list[int]
+        cell_indices: list[int],
+        notebook_abs_path: Optional[str] = None,
     ) -> list:
         """Delete cell using YDoc (collaborative editing mode).
-        
+
         Args:
             serverapp: Jupyter ServerApp instance
-            notebook_path: Path to the notebook
+            notebook_path: Path to the notebook as known to the
+                file_id_manager (typically relative; do not pass a
+                symlink-resolved absolute path).
             cell_indices: List of indices of cells to delete
-            
+            notebook_abs_path: Absolute, OS-resolvable path used only as
+                a file-fallback when YDoc is not available. Defaults to
+                ``notebook_path``.
+
         Returns:
             NotebookNode
         """
@@ -46,12 +52,14 @@ class DeleteCellTool(BaseTool):
                 raise ValueError(
                     f"Cell index {max(cell_indices)} is out of range. Notebook has {len(nb)} cells."
                 )
-            
+
             cells = nb.delete_many_cells(cell_indices)
             return cells
         else:
             # YDoc not available, use file operations
-            return await self._delete_cell_file(notebook_path, cell_indices)
+            return await self._delete_cell_file(
+                notebook_abs_path or notebook_path, cell_indices
+            )
     
     async def _delete_cell_file(
         self,
@@ -171,17 +179,26 @@ class DeleteCellTool(BaseTool):
             serverapp = context.serverapp
             notebook_path, _ = get_current_notebook_context(notebook_manager)
 
-            # Resolve to absolute path
-            if serverapp and not Path(notebook_path).is_absolute():
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc room lookups; compute the absolute
+            # path separately for direct file I/O. See note in
+            # execute_cell_tool.py for why this matters on HPC/symlink
+            # setups.
+            notebook_abs_path = notebook_path
+            if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
-            
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
+
             if serverapp:
-                # Try YDoc approach first
-                cells = await self._delete_cell_ydoc(serverapp, notebook_path, cell_indices)
+                # Try YDoc approach first (relative path for file_id lookup,
+                # absolute path passed through for the file fallback inside).
+                cells = await self._delete_cell_ydoc(
+                    serverapp, notebook_path, cell_indices,
+                    notebook_abs_path=notebook_abs_path,
+                )
             else:
                 # Fall back to file operations
-                cells = await self._delete_cell_file(notebook_path, cell_indices)
+                cells = await self._delete_cell_file(notebook_abs_path, cell_indices)
                 
         elif mode == ServerMode.MCP_SERVER and notebook_manager is not None:
             # MCP_SERVER mode: Use WebSocket connection

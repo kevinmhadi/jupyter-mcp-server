@@ -78,6 +78,7 @@ class EditCellSourceTool(BaseTool):
     async def _edit_cell_ydoc(
         self, serverapp: Any, notebook_path: str,
         cell_index: int, old_string: str, new_string: str, replace_all: bool,
+        notebook_abs_path: Optional[str] = None,
     ) -> str:
         nb = await get_notebook_model(serverapp, notebook_path)
 
@@ -98,7 +99,8 @@ class EditCellSourceTool(BaseTool):
             return diff
         else:
             return await self._edit_cell_file(
-                notebook_path, cell_index, old_string, new_string, replace_all,
+                notebook_abs_path or notebook_path,
+                cell_index, old_string, new_string, replace_all,
             )
 
     async def _edit_cell_file(
@@ -172,18 +174,23 @@ class EditCellSourceTool(BaseTool):
             serverapp = context.serverapp
             notebook_path, _ = get_current_notebook_context(notebook_manager)
 
-            if serverapp and not Path(notebook_path).is_absolute():
+            # Keep the original (likely relative) notebook_path for
+            # file_id_manager / YDoc lookups; compute absolute separately
+            # for direct file I/O. See note in execute_cell_tool.py.
+            notebook_abs_path = notebook_path
+            if notebook_path and serverapp and not Path(notebook_path).is_absolute():
                 root_dir = serverapp.root_dir
-                notebook_path = str(Path(root_dir) / notebook_path)
+                notebook_abs_path = str(Path(root_dir) / notebook_path)
 
             if serverapp:
                 diff = await self._edit_cell_ydoc(
                     serverapp, notebook_path, cell_index,
                     old_string, new_string, replace_all,
+                    notebook_abs_path=notebook_abs_path,
                 )
             else:
                 diff = await self._edit_cell_file(
-                    notebook_path, cell_index,
+                    notebook_abs_path, cell_index,
                     old_string, new_string, replace_all,
                 )
 
